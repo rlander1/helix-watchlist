@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-09-17T18:05:19-04:00",
+  "updated_at": "2026-09-17T18:10:24-04:00",
   "status": "committed",
   "cap": 20,
   "horizon": "up to 2 weeks",
@@ -76,9 +76,9 @@
       "previous_close": 218.36
     }
   ],
-  "quotes_refreshed_at": "2026-09-17T18:05:19-04:00",
+  "quotes_refreshed_at": "2026-09-17T18:10:24-04:00",
   "quote_refresh": {
-    "at": "2026-09-17T18:05:19-04:00",
+    "at": "2026-09-17T18:10:24-04:00",
     "source": "yahoo_chart_public",
     "ok": [
       "SKHY",

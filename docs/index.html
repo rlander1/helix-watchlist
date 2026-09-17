@@ -46,13 +46,15 @@
         <button type="button" class="sm" id="btnSettingsClose">Close</button>
       </div>
       <p class="settings-help">
-        Optional GitHub fine-grained PAT for committing Add/Remove from the public Pages site.
+        Optional GitHub fine-grained PAT for the public Pages site (Add/Remove commits + Refresh quotes via Action).
         Stored <strong>only</strong> in this browser (<code>localStorage</code> key <code>helix-gh-pat</code>) —
-        never logged, never written to disk or the repo. Scope: Contents Read/Write on
-        <code>rlander1/helix-watchlist</code> only.
+        never logged, never written to disk or the repo. Scopes on
+        <code>rlander1/helix-watchlist</code> only: <strong>Contents</strong> Read/Write and
+        <strong>Actions</strong> Read/Write (for Refresh quotes workflow_dispatch).
       </p>
       <p class="settings-help muted">
-        Local preview (<code>127.0.0.1:8765</code>) commits via the server <code>gh</code> CLI — no PAT needed.
+        Local preview (<code>127.0.0.1:8765</code>) uses the server proxy / <code>gh</code> CLI — no PAT needed.
+        Without a token on Pages, Refresh quotes waits for the weekday 9:30 AM / 4:00 PM ET Action.
       </p>
       <label class="field">GitHub fine-grained PAT
         <input id="settingsPat" type="password" autocomplete="off" spellcheck="false" placeholder="ghp_… fine-grained PAT" />

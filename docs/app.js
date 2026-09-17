@@ -17,6 +17,7 @@
   // Prefer raw GitHub after commits — Pages CDN can lag and make Add look failed.
   const RAW_WATCHLIST_URL =
     "https://raw.githubusercontent.com/rlander1/helix-watchlist/main/docs/watchlist.json";
+  const QUOTE_WORKFLOW = "refresh-watchlist-quotes.yml";
   let commitInFlight = false;
   const PAPER_PORTFOLIO_KEY = "helix-paper-portfolio";
   const PAPER_ORDERS_KEY = "helix-paper-orders";
@@ -2535,7 +2536,142 @@
     }
   }
 
+  function watchlistStamp(data) {
+    if (!data || typeof data !== "object") return "";
+    return String(
+      data.quotes_refreshed_at || data.updated_at || data.saved_at || ""
+    );
+  }
+
+  async function fetchRawWatchlist() {
+    const res = await fetch(RAW_WATCHLIST_URL + "?t=" + Date.now(), {
+      cache: "no-store",
+    });
+    if (!res.ok) throw new Error("raw watchlist HTTP " + res.status);
+    return res.json();
+  }
+
+  /**
+   * Public Pages: trigger GitHub Action to refresh quotes server-side, then
+   * poll raw.githubusercontent.com (never invent prices; avoid Pages CDN lag).
+   */
+  async function refreshQuotesViaGithubAction() {
+    const pat = getGhPat();
+    if (!pat) {
+      setStatus(
+        "On GitHub Pages, Refresh quotes needs a token in Settings " +
+          "(Contents R/W + Actions Read/Write on rlander1/helix-watchlist), " +
+          "or wait for the weekday 9:30 AM / 4:00 PM ET Action. " +
+          "Prices kept from watchlist.json (no invented prices).",
+        "warn"
+      );
+      return;
+    }
+
+    let baseline = watchlistStamp(
+      baseFromFile || { updated_at: state.updated_at }
+    );
+    try {
+      const cur = await fetchRawWatchlist();
+      baseline = watchlistStamp(cur) || baseline;
+    } catch (_) {
+      /* keep baseline from state */
+    }
+
+    setStatus("Refreshing quotes via GitHub Action…");
+    $("btnRefresh").disabled = true;
+    try {
+      const disp = await fetch(
+        "https://api.github.com/repos/" +
+          GH_REPO +
+          "/actions/workflows/" +
+          QUOTE_WORKFLOW +
+          "/dispatches",
+        {
+          method: "POST",
+          headers: {
+            Accept: "application/vnd.github+json",
+            Authorization: "Bearer " + pat,
+            "Content-Type": "application/json",
+            "X-GitHub-Api-Version": "2022-11-28",
+          },
+          body: JSON.stringify({ ref: "main" }),
+        }
+      );
+      if (disp.status === 403) {
+        setStatus(
+          "Token needs Actions write (and Contents) on " +
+            GH_REPO +
+            " to trigger quote refresh. Prices kept from watchlist.json.",
+          "err"
+        );
+        return;
+      }
+      if (disp.status !== 204 && !disp.ok) {
+        let detail = "HTTP " + disp.status;
+        try {
+          const body = await disp.json();
+          if (body && body.message) detail = body.message;
+        } catch (_) {}
+        setStatus(
+          "Could not start quote Action (" +
+            detail +
+            "). Prices kept from watchlist.json.",
+          "err"
+        );
+        return;
+      }
+
+      const deadline = Date.now() + 120000;
+      let lastErr = null;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 4000));
+        try {
+          const data = await fetchRawWatchlist();
+          const stamp = watchlistStamp(data);
+          if (stamp && stamp !== baseline) {
+            applyWatchlistData(data, { setBase: true, clearOverlay: false });
+            // Keep overlay ticker edits but prefer fresh quotes from file for known symbols.
+            quotesCorsBlocked = false;
+            render();
+            checkPriceAlerts();
+            if (selectedSymbol) {
+              updateDetailTradeHint(selectedSymbol);
+              drawHistoryChart(selectedSymbol);
+            }
+            setStatus(
+              "Quotes refreshed via GitHub Action (" +
+                (data.tickers ? data.tickers.length : state.tickers.length) +
+                " tickers). Source: raw docs/watchlist.json — no invented prices.",
+              "ok"
+            );
+            return;
+          }
+          setStatus(
+            "GitHub Action running… waiting for quote file update…",
+            "warn"
+          );
+        } catch (err) {
+          lastErr = err;
+        }
+      }
+      setStatus(
+        "Timed out waiting for Action quote update" +
+          (lastErr && lastErr.message ? " (" + lastErr.message + ")" : "") +
+          ". Prices kept from watchlist.json (no invented prices). Try again shortly.",
+        "warn"
+      );
+    } finally {
+      $("btnRefresh").disabled = false;
+    }
+  }
+
   async function refreshQuotes() {
+    if (!isLocalPreview()) {
+      await refreshQuotesViaGithubAction();
+      return;
+    }
+
     if (!state.tickers.length) {
       setStatus("No tickers to refresh.", "warn");
       return;

@@ -8,6 +8,8 @@
   const ACTION_HISTORY_KEY = "helix-action-history";
   const ACTION_HISTORY_CAP = 500;
   const DATA_URL = "watchlist.json";
+  /** Same-origin chart series published by Harbor Action (docs/history/). */
+  const HISTORY_BASE = "history";
   const GH_PAT_KEY = "helix-gh-pat";
   const PENDING_KEY = "helix-pending-symbols";
   const GH_REPO = "rlander1/helix-watchlist";
@@ -1897,15 +1899,86 @@
     };
   }
 
-  async function fetchYahooChart(symbol, rangeId) {
+  /**
+   * Site-published history file (Harbor Action → docs/history/{SYMBOL}.json).
+   * Accepts either:
+   *   { symbol, updated_at, ranges: { "1d": { timestamps, closes, last?, ... }, ... } }
+   * or a raw Yahoo chart payload under ranges[id].yahoo / ranges[id] itself.
+   */
+  function parseSiteHistoryRange(rangeObj, symbol, preset) {
+    if (!rangeObj || typeof rangeObj !== "object") {
+      throw new Error("Missing range " + preset.id);
+    }
+    // Raw Yahoo nested under .yahoo or full chart object
+    if (rangeObj.chart || (rangeObj.yahoo && rangeObj.yahoo.chart)) {
+      const payload = rangeObj.chart ? rangeObj : rangeObj.yahoo;
+      const parsed = parseYahooChartPayload(payload, symbol, preset);
+      parsed.via = "site-history";
+      return parsed;
+    }
+    let timestamps = Array.isArray(rangeObj.timestamps)
+      ? rangeObj.timestamps.slice()
+      : [];
+    let closes = Array.isArray(rangeObj.closes) ? rangeObj.closes.slice() : [];
+    const pairs = [];
+    for (let i = 0; i < timestamps.length; i++) {
+      const c = closes[i];
+      if (c != null && !Number.isNaN(Number(c))) {
+        pairs.push({ t: Number(timestamps[i]), c: Number(c) });
+      }
+    }
+    if (preset.maxPoints && pairs.length > preset.maxPoints) {
+      pairs.splice(0, pairs.length - preset.maxPoints);
+    }
+    if (pairs.length < 2) {
+      throw new Error("Not enough history points for " + preset.label);
+    }
+    const lastClose = pairs[pairs.length - 1].c;
+    const last =
+      rangeObj.last != null && !Number.isNaN(Number(rangeObj.last))
+        ? Number(rangeObj.last)
+        : lastClose;
+    return {
+      symbol: symbol,
+      last: last,
+      change: rangeObj.change != null ? Number(rangeObj.change) : null,
+      change_pct:
+        rangeObj.change_pct != null ? Number(rangeObj.change_pct) : null,
+      timestamps: pairs.map((p) => p.t),
+      closes: pairs.map((p) => p.c),
+      rangeId: preset.id,
+      interval: rangeObj.interval || preset.interval,
+      yahooRange: rangeObj.yahoo_range || preset.range,
+      via: "site-history",
+      updated_at: rangeObj.updated_at || null,
+    };
+  }
+
+  async function fetchSiteHistory(symbol, rangeId) {
     const preset = getPreset(rangeId || "1d");
-    const proxyUrl =
-      "/api/chart?symbol=" +
-      encodeURIComponent(symbol) +
-      "&interval=" +
-      encodeURIComponent(preset.interval) +
-      "&range=" +
-      encodeURIComponent(preset.range);
+    const sym = String(symbol || "").toUpperCase();
+    const url =
+      HISTORY_BASE +
+      "/" +
+      encodeURIComponent(sym) +
+      ".json?t=" +
+      Date.now();
+    const res = await fetch(url, { cache: "no-store" });
+    if (res.status === 404) {
+      throw new Error("history file missing");
+    }
+    if (!res.ok) throw new Error("history HTTP " + res.status);
+    const data = await res.json();
+    if (!data || typeof data !== "object") throw new Error("bad history JSON");
+    const ranges = data.ranges || {};
+    const rangeObj = ranges[preset.id];
+    if (!rangeObj) throw new Error("range " + preset.id + " not in history file");
+    const parsed = parseSiteHistoryRange(rangeObj, sym, preset);
+    parsed.file_updated_at = data.updated_at || null;
+    return parsed;
+  }
+
+  async function fetchYahooChartDirect(symbol, preset) {
     const yahooUrl =
       "https://query1.finance.yahoo.com/v8/finance/chart/" +
       encodeURIComponent(symbol) +
@@ -1913,45 +1986,95 @@
       encodeURIComponent(preset.interval) +
       "&range=" +
       encodeURIComponent(preset.range);
-
-    // Prefer same-origin proxy (local preview_server.py); fall back to direct Yahoo.
-    let data = null;
-    let via = null;
-    let proxyErr = null;
-    try {
-      const res = await fetch(proxyUrl, { cache: "no-store" });
-      if (res.ok) {
-        data = await res.json();
-        via = "proxy";
-      } else {
-        proxyErr = "proxy HTTP " + res.status;
-        try {
-          const errBody = await res.json();
-          if (errBody && errBody.error) proxyErr = "proxy " + errBody.error;
-        } catch (_) {}
-      }
-    } catch (err) {
-      proxyErr = String(err && err.message ? err.message : err);
-    }
-
-    if (!data) {
-      try {
-        const res = await fetch(yahooUrl, { mode: "cors", cache: "no-store" });
-        if (!res.ok) throw new Error("HTTP " + res.status);
-        data = await res.json();
-        via = "yahoo";
-      } catch (err) {
-        const msg = String(err && err.message ? err.message : err);
-        if (proxyErr) {
-          throw new Error(msg + " (proxy: " + proxyErr + ")");
-        }
-        throw err;
-      }
-    }
-
+    const res = await fetch(yahooUrl, { mode: "cors", cache: "no-store" });
+    if (!res.ok) throw new Error("Yahoo HTTP " + res.status);
+    const data = await res.json();
     const parsed = parseYahooChartPayload(data, symbol, preset);
-    parsed.via = via;
+    parsed.via = "yahoo";
     return parsed;
+  }
+
+  async function fetchYahooChartViaProxy(symbol, preset) {
+    const proxyUrl =
+      "/api/chart?symbol=" +
+      encodeURIComponent(symbol) +
+      "&interval=" +
+      encodeURIComponent(preset.interval) +
+      "&range=" +
+      encodeURIComponent(preset.range);
+    const res = await fetch(proxyUrl, { cache: "no-store" });
+    if (!res.ok) {
+      let detail = "proxy HTTP " + res.status;
+      try {
+        const errBody = await res.json();
+        if (errBody && errBody.error) detail = "proxy " + errBody.error;
+      } catch (_) {}
+      throw new Error(detail);
+    }
+    const data = await res.json();
+    const parsed = parseYahooChartPayload(data, symbol, preset);
+    parsed.via = "proxy";
+    return parsed;
+  }
+
+  /**
+   * Local 8765: proxy then Yahoo.
+   * Pages: same-origin history/{SYMBOL}.json only first — never /api/chart (404).
+   * Optional direct Yahoo last; CORS failure → friendly message, no proxy noise.
+   */
+  async function fetchYahooChart(symbol, rangeId) {
+    const preset = getPreset(rangeId || "1d");
+    const sym = String(symbol || "").toUpperCase();
+
+    if (isLocalPreview()) {
+      try {
+        return await fetchYahooChartViaProxy(sym, preset);
+      } catch (proxyErr) {
+        try {
+          return await fetchYahooChartDirect(sym, preset);
+        } catch (yahooErr) {
+          const p = proxyErr && proxyErr.message ? proxyErr.message : String(proxyErr);
+          const y = yahooErr && yahooErr.message ? yahooErr.message : String(yahooErr);
+          throw new Error(y + " (" + p + ")");
+        }
+      }
+    }
+
+    // Public Pages / static host — no preview_server.
+    let siteErr = null;
+    try {
+      return await fetchSiteHistory(sym, preset.id);
+    } catch (err) {
+      siteErr = err;
+    }
+
+    try {
+      return await fetchYahooChartDirect(sym, preset);
+    } catch (yahooErr) {
+      const siteMsg =
+        siteErr && siteErr.message ? String(siteErr.message) : "unavailable";
+      const yMsg =
+        yahooErr && yahooErr.message ? String(yahooErr.message) : "blocked";
+      if (
+        siteMsg.indexOf("missing") >= 0 ||
+        siteMsg.indexOf("404") >= 0 ||
+        siteMsg.indexOf("not in history") >= 0
+      ) {
+        throw new Error(
+          "Chart history not on site yet — use Refresh quotes to update charts. " +
+            "(Browser Yahoo also blocked: " +
+            yMsg +
+            ")"
+        );
+      }
+      throw new Error(
+        "Chart history unavailable (" +
+          siteMsg +
+          "). Browser Yahoo blocked (" +
+          yMsg +
+          "). No invented prices."
+      );
+    }
   }
 
   function nearestIndex(timestamps, targetSec) {
@@ -2454,12 +2577,21 @@
       if (cached && cached.closes && cached.closes.length) {
         series = cached;
         warning =
-          "Chart fetch failed (CORS/429/network) - showing last-known series. " +
-          (err && err.message ? err.message : "");
+          "Showing last cached series. " +
+          (err && err.message ? err.message : "Chart fetch failed.");
       } else {
-        warning =
-          "Chart blocked (CORS/429/network). No invented prices. " +
-          (err && err.message ? err.message : "");
+        const em = err && err.message ? String(err.message) : "";
+        if (em.indexOf("Chart history not on site yet") >= 0) {
+          warning = em + " No invented prices.";
+        } else if (!isLocalPreview()) {
+          warning =
+            (em ||
+              "Chart history not on site yet — use Refresh quotes to update charts.") +
+            " No invented prices.";
+        } else {
+          warning =
+            "Chart blocked (CORS/429/network). No invented prices. " + em;
+        }
         series = { timestamps: [], closes: [], last: null };
       }
     }
@@ -2607,6 +2739,12 @@
 
   function applyRefreshedWatchlist(data, sourceLabel) {
     applyWatchlistData(data, { setBase: true, clearOverlay: false });
+    // Bust chart cache so next openDetail picks up new history/{SYMBOL}.json.
+    try {
+      Object.keys(chartCache).forEach((k) => {
+        delete chartCache[k];
+      });
+    } catch (_) {}
     quotesCorsBlocked = false;
     render();
     checkPriceAlerts();

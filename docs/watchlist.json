@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-09-17T18:24:09-04:00",
+  "updated_at": "2026-09-17T18:24:11-04:00",
   "status": "committed",
   "cap": 20,
   "horizon": "up to 2 weeks",
@@ -76,20 +76,8 @@
       "action_why": "Liquid mega-cap add (was overlay-only); no discrete \u22642-week catalyst locked today \u2014 Watch pending a dated event.",
       "size_usd": 2000,
       "source": "https://finance.yahoo.com/quote/AAPL"
-    },
-    {
-      "symbol": "MSFT",
-      "name": "Microsoft Corporation",
-      "last": 497.75,
-      "change": 5.310000000000002,
-      "change_pct": 1.078303955811876,
-      "currency": "USD",
-      "action": "Watch",
-      "action_why": "Helix verify add+remove net-zero",
-      "size_usd": 2000.0,
-      "source": "https://finance.yahoo.com/quote/MSFT"
     }
   ],
   "notes": "",
-  "committed_count": 7
+  "committed_count": 6
 }

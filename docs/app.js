@@ -8,12 +8,16 @@
   const ACTION_HISTORY_KEY = "helix-action-history";
   const ACTION_HISTORY_CAP = 500;
   const DATA_URL = "watchlist.json";
+  const ACTION_HISTORY_URL = "action-history.json";
+  const PAPER_SIM_URL = "paper-sim.json";
   /** Same-origin chart series published by Harbor Action (docs/history/). */
   const HISTORY_BASE = "history";
   const GH_PAT_KEY = "helix-gh-pat";
   const PENDING_KEY = "helix-pending-symbols";
   const GH_REPO = "rlander1/helix-watchlist";
   const GH_PATH = "docs/watchlist.json";
+  const GH_ACTION_HISTORY_PATH = "docs/action-history.json";
+  const GH_PAPER_SIM_PATH = "docs/paper-sim.json";
   const PAGES_WATCHLIST_URL =
     "https://rlander1.github.io/helix-watchlist/watchlist.json";
   // Prefer raw GitHub after commits — Pages CDN can lag and make Add look failed.
@@ -233,7 +237,13 @@
 
   async function commitViaLocalApi(action, body) {
     const path =
-      action === "remove" ? "/api/commit-remove" : "/api/commit-add";
+      action === "remove"
+        ? "/api/commit-remove"
+        : action === "action"
+          ? "/api/commit-action"
+          : action === "paper-sim"
+            ? "/api/commit-paper-sim"
+            : "/api/commit-add";
     const res = await fetch(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -531,22 +541,328 @@
     localStorage.setItem(ACTION_HISTORY_KEY, JSON.stringify(capped));
   }
 
-  function appendActionChange(symbol, from, to) {
-    if (!symbol || from === to) return;
-    const entries = loadActionHistory();
-    entries.push({
-      symbol: String(symbol),
+  function parseActionHistoryPayload(raw) {
+    if (Array.isArray(raw)) return raw.filter((e) => e && typeof e === "object");
+    if (raw && typeof raw === "object" && Array.isArray(raw.entries)) {
+      return raw.entries.filter((e) => e && typeof e === "object");
+    }
+    return [];
+  }
+
+  function actionHistoryDedupeKey(e) {
+    return [
+      String((e && e.symbol) || "")
+        .trim()
+        .toUpperCase(),
+      String((e && e.at) || ""),
+      String((e && e.from) || ""),
+      String((e && e.to) || ""),
+    ].join("|");
+  }
+
+  function mergeActionHistoryEntries(base, incoming) {
+    const out = [];
+    const seen = new Set();
+    function pushAll(list) {
+      (list || []).forEach((e) => {
+        if (!e || typeof e !== "object") return;
+        const sym = String(e.symbol || "")
+          .trim()
+          .toUpperCase();
+        if (!sym) return;
+        const normalized = {
+          symbol: sym,
+          from: String(e.from != null ? e.from : ""),
+          to: String(e.to != null ? e.to : ""),
+          at: String(e.at || ""),
+        };
+        if (!normalized.at) return;
+        const key = actionHistoryDedupeKey(normalized);
+        if (seen.has(key)) return;
+        seen.add(key);
+        out.push(normalized);
+      });
+    }
+    pushAll(base);
+    pushAll(incoming);
+    out.sort((a, b) => String(a.at).localeCompare(String(b.at)));
+    return out.slice(-ACTION_HISTORY_CAP);
+  }
+
+  function appendActionChange(symbol, from, to, atIso) {
+    if (!symbol || from === to) return null;
+    const entry = {
+      symbol: String(symbol).toUpperCase(),
       from: String(from),
       to: String(to),
-      at: new Date().toISOString(),
-    });
+      at: atIso || new Date().toISOString(),
+    };
+    const entries = mergeActionHistoryEntries(loadActionHistory(), [entry]);
     saveActionHistory(entries);
+    return entry;
   }
 
   function actionHistoryForSymbol(symbol) {
+    const sym = String(symbol || "")
+      .trim()
+      .toUpperCase();
     return loadActionHistory().filter(
-      (e) => e && e.symbol === symbol && e.at && e.from != null && e.to != null
+      (e) =>
+        e &&
+        String(e.symbol || "")
+          .trim()
+          .toUpperCase() === sym &&
+        e.at &&
+        e.from != null &&
+        e.to != null
     );
+  }
+
+  function backfillActionHistoryFromWatchlist() {
+    const existing = loadActionHistory();
+    const bySym = new Set(
+      existing.map((e) =>
+        String((e && e.symbol) || "")
+          .trim()
+          .toUpperCase()
+      )
+    );
+    const now = new Date().toISOString();
+    const seeds = [];
+    (state.tickers || []).forEach((t) => {
+      if (!t || !t.symbol) return;
+      const sym = String(t.symbol).toUpperCase();
+      const action = normalizeAction(t.action);
+      if (!action) return;
+      if (bySym.has(sym)) return;
+      seeds.push({ symbol: sym, from: "—", to: action, at: now });
+      bySym.add(sym);
+    });
+    if (!seeds.length) return existing;
+    const merged = mergeActionHistoryEntries(existing, seeds);
+    saveActionHistory(merged);
+    return merged;
+  }
+
+  async function fetchAndMergeActionHistory() {
+    try {
+      const res = await fetch(ACTION_HISTORY_URL + "?t=" + Date.now(), {
+        cache: "no-store",
+      });
+      if (!res.ok) return loadActionHistory();
+      const raw = await res.json();
+      const fileEntries = parseActionHistoryPayload(raw);
+      const merged = mergeActionHistoryEntries(loadActionHistory(), fileEntries);
+      saveActionHistory(merged);
+      return merged;
+    } catch (_) {
+      return loadActionHistory();
+    }
+  }
+
+  async function ghGetContentsJson(path) {
+    const pat = getGhPat();
+    if (!pat) return null;
+    const getRes = await fetch(
+      "https://api.github.com/repos/" + GH_REPO + "/contents/" + path,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer " + pat,
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      }
+    );
+    if (getRes.status === 404) return { missing: true, sha: null, data: null };
+    if (!getRes.ok) {
+      throw new Error(
+        "GitHub Contents GET failed for " + path + " (HTTP " + getRes.status + ")"
+      );
+    }
+    const meta = await getRes.json();
+    const sha = meta && meta.sha;
+    let data = null;
+    if (meta && meta.content) {
+      data = JSON.parse(base64ToUtf8(meta.content));
+    }
+    return { missing: false, sha: sha, data: data };
+  }
+
+  async function ghPutContentsJson(path, obj, message, sha) {
+    const pat = getGhPat();
+    if (!pat) throw new Error("No GitHub PAT");
+    const content = utf8ToBase64(JSON.stringify(obj, null, 2) + "\n");
+    const body = { message: message, content: content };
+    if (sha) body.sha = sha;
+    const putRes = await fetch(
+      "https://api.github.com/repos/" + GH_REPO + "/contents/" + path,
+      {
+        method: "PUT",
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer " + pat,
+          "Content-Type": "application/json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+        body: JSON.stringify(body),
+      }
+    );
+    if (!putRes.ok) {
+      let detail = "HTTP " + putRes.status;
+      try {
+        const errBody = await putRes.json();
+        if (errBody && errBody.message) detail = errBody.message;
+      } catch (_) {
+        /* ignore */
+      }
+      throw new Error("GitHub Contents PUT failed for " + path + ": " + detail);
+    }
+    return putRes.json().catch(() => ({ ok: true }));
+  }
+
+  /**
+   * Update one ticker action in docs/watchlist.json and append docs/action-history.json.
+   * Preserves unrelated watchlist fields from the remote GET.
+   */
+  async function commitActionChangeViaGithubPat(symbol, from, to, at) {
+    const sym = String(symbol).toUpperCase();
+    const wlMeta = await ghGetContentsJson(GH_PATH);
+    if (!wlMeta || wlMeta.missing || !wlMeta.data) {
+      throw new Error("Could not load remote watchlist.json");
+    }
+    const wl = wlMeta.data;
+    if (!wl || !Array.isArray(wl.tickers)) {
+      throw new Error("Remote watchlist.json missing tickers");
+    }
+    let found = false;
+    wl.tickers.forEach((t) => {
+      if (
+        t &&
+        String(t.symbol || "")
+          .toUpperCase() === sym
+      ) {
+        t.action = normalizeAction(to);
+        found = true;
+      }
+    });
+    if (!found) throw new Error(sym + " not found on remote watchlist");
+    wl.updated_at = new Date().toISOString();
+    wl.committed_count = wl.tickers.length;
+    await ghPutContentsJson(
+      GH_PATH,
+      wl,
+      "watchlist: action " + sym + " " + from + "→" + to,
+      wlMeta.sha
+    );
+
+    const histMeta = await ghGetContentsJson(GH_ACTION_HISTORY_PATH);
+    let remoteEntries = [];
+    let histSha = null;
+    if (histMeta && !histMeta.missing) {
+      remoteEntries = parseActionHistoryPayload(histMeta.data);
+      histSha = histMeta.sha;
+    }
+    const entry = {
+      symbol: sym,
+      from: String(from),
+      to: String(to),
+      at: at || new Date().toISOString(),
+    };
+    const mergedRemote = mergeActionHistoryEntries(remoteEntries, [entry]);
+    // Prefer bare array shape for docs/action-history.json
+    await ghPutContentsJson(
+      GH_ACTION_HISTORY_PATH,
+      mergedRemote,
+      "action-history: " + sym + " " + from + "→" + to,
+      histSha
+    );
+    const localMerged = mergeActionHistoryEntries(loadActionHistory(), [
+      entry,
+    ]);
+    saveActionHistory(localMerged);
+    applyWatchlistData(wl, { setBase: true });
+    return { ok: true, watchlist: wl, action_history: mergedRemote };
+  }
+
+  async function tryCommitActionChange(symbol, from, to, at) {
+    const sym = String(symbol).toUpperCase();
+    if (isLocalPreview()) {
+      try {
+        const result = await commitViaLocalApi("action", {
+          symbol: sym,
+          from: from,
+          to: to,
+          at: at,
+        });
+        if (result.watchlist) {
+          applyWatchlistData(result.watchlist, { setBase: true });
+        }
+        if (Array.isArray(result.action_history)) {
+          saveActionHistory(
+            mergeActionHistoryEntries(
+              loadActionHistory(),
+              result.action_history
+            )
+          );
+        }
+        setStatus(
+          "Committed action " +
+            sym +
+            " " +
+            from +
+            "→" +
+            to +
+            " (watchlist + action-history).",
+          "ok"
+        );
+        return true;
+      } catch (err) {
+        setStatus(
+          "Action updated for " +
+            sym +
+            " (local only). Commit failed: " +
+            (err && err.message ? err.message : err) +
+            " — download JSON or tell Helix.",
+          "warn"
+        );
+        return false;
+      }
+    }
+
+    if (getGhPat()) {
+      try {
+        await commitActionChangeViaGithubPat(sym, from, to, at);
+        setStatus(
+          "Committed action " +
+            sym +
+            " " +
+            from +
+            "→" +
+            to +
+            " via GitHub token.",
+          "ok"
+        );
+        return true;
+      } catch (err) {
+        setStatus(
+          "Action updated for " +
+            sym +
+            " (local only). Commit failed: " +
+            (err && err.message ? err.message : err) +
+            " — download JSON or tell Helix.",
+          "warn"
+        );
+        return false;
+      }
+    }
+
+    setStatus(
+      "Action updated for " +
+        sym +
+        " (local only) — add a commit token in Settings, or tell Helix to commit action-history.",
+      "warn"
+    );
+    return false;
   }
 
   function fmtMoney(n) {
@@ -801,21 +1117,39 @@
         const sym = sel.getAttribute("data-symbol");
         const ticker = state.tickers.find((x) => x.symbol === sym);
         if (!ticker) return;
+        if (commitInFlight) {
+          sel.value = normalizeAction(ticker.action);
+          setStatus("Commit already in flight — wait for it to finish.", "warn");
+          return;
+        }
         const from = normalizeAction(ticker.action);
         const to = normalizeAction(sel.value);
-        if (from !== to) {
-          appendActionChange(sym, from, to);
-        }
+        if (from === to) return;
+        const entry = appendActionChange(sym, from, to);
         ticker.action = to;
         sel.className = "action-select " + to;
         state.updated_at = new Date().toISOString();
         saveOverlay();
         renderMeta();
-        setStatus("Action updated for " + sym + " (local)", "ok");
-        // Persist + immediately re-draw every history marker on open chart.
+        setStatus("Action updated for " + sym + " — committing…", "ok");
         if (selectedSymbol === sym) {
           redrawChartMarkersNow(sym);
         }
+        const at = entry && entry.at ? entry.at : new Date().toISOString();
+        sel.disabled = true;
+        setCommitBusy(true);
+        Promise.resolve()
+          .then(function () {
+            return tryCommitActionChange(sym, from, to, at);
+          })
+          .finally(function () {
+            sel.disabled = false;
+            setCommitBusy(false);
+            if (selectedSymbol === sym) {
+              redrawChartMarkersNow(sym);
+            }
+            renderMeta();
+          });
       });
       sel.addEventListener("click", (e) => e.stopPropagation());
     });
@@ -948,6 +1282,209 @@
 
   function saveAlerts(alerts) {
     localStorage.setItem(PRICE_ALERTS_KEY, JSON.stringify(alerts));
+  }
+
+  function buildPaperSimPayload() {
+    return {
+      updated_at: new Date().toISOString(),
+      portfolio: loadPortfolio(),
+      orders: loadOrders().slice(-PAPER_ORDERS_CAP),
+      alerts: loadAlerts(),
+    };
+  }
+
+  function orderDedupeKey(o) {
+    if (!o || typeof o !== "object") return "";
+    if (o.id != null && o.at != null) return String(o.id) + "|" + String(o.at);
+    if (o.id != null) return String(o.id);
+    return [
+      String(o.at || ""),
+      String(o.symbol || "").toUpperCase(),
+      String(o.side || ""),
+      String(o.qty || ""),
+      String(o.price || ""),
+    ].join("|");
+  }
+
+  function mergePaperSimFromFile(fileData) {
+    if (!fileData || typeof fileData !== "object") return false;
+    const fileUpdated = fileData.updated_at ? Date.parse(fileData.updated_at) : 0;
+    const localPortfolio = loadPortfolio();
+    const localOrders = loadOrders();
+    const localAlerts = loadAlerts();
+
+    // Prefer newer portfolio by file updated_at vs a soft local stamp:
+    // if local is still the default empty and file has content, take file;
+    // if file has newer updated_at, take file portfolio; else keep local.
+    let localStamp = 0;
+    try {
+      const raw = localStorage.getItem(PAPER_PORTFOLIO_KEY);
+      // No dedicated stamp — use newest order.at as local activity proxy
+      localOrders.forEach((o) => {
+        const t = o && o.at ? Date.parse(o.at) : 0;
+        if (!Number.isNaN(t) && t > localStamp) localStamp = t;
+      });
+    } catch (_) {
+      /* ignore */
+    }
+
+    const filePortfolio =
+      fileData.portfolio && typeof fileData.portfolio === "object"
+        ? fileData.portfolio
+        : null;
+    const fileOrders = Array.isArray(fileData.orders) ? fileData.orders : [];
+    const fileAlerts = Array.isArray(fileData.alerts) ? fileData.alerts : null;
+
+    const localIsDefault =
+      localPortfolio.cash === localPortfolio.startingCash &&
+      localPortfolio.realizedPnL === 0 &&
+      Object.keys(localPortfolio.positions || {}).length === 0 &&
+      localOrders.length === 0;
+
+    if (filePortfolio) {
+      const takeFilePortfolio =
+        localIsDefault ||
+        (fileUpdated && !Number.isNaN(fileUpdated) && fileUpdated >= localStamp);
+      if (takeFilePortfolio) {
+        const starting =
+          filePortfolio.startingCash != null &&
+          !Number.isNaN(Number(filePortfolio.startingCash))
+            ? Number(filePortfolio.startingCash)
+            : DEFAULT_STARTING_CASH;
+        const cash =
+          filePortfolio.cash != null && !Number.isNaN(Number(filePortfolio.cash))
+            ? Number(filePortfolio.cash)
+            : starting;
+        const positions =
+          filePortfolio.positions && typeof filePortfolio.positions === "object"
+            ? filePortfolio.positions
+            : {};
+        const realizedPnL =
+          filePortfolio.realizedPnL != null &&
+          !Number.isNaN(Number(filePortfolio.realizedPnL))
+            ? Number(filePortfolio.realizedPnL)
+            : 0;
+        savePortfolio({ startingCash: starting, cash, positions, realizedPnL });
+      }
+    }
+
+    // Union orders deduped by id+at (never invent fills)
+    const mergedOrders = [];
+    const seen = new Set();
+    function pushOrders(list) {
+      (list || []).forEach((o) => {
+        if (!o || typeof o !== "object") return;
+        const key = orderDedupeKey(o);
+        if (!key || seen.has(key)) return;
+        seen.add(key);
+        mergedOrders.push(o);
+      });
+    }
+    pushOrders(localOrders);
+    pushOrders(fileOrders);
+    mergedOrders.sort((a, b) => String(a.at || "").localeCompare(String(b.at || "")));
+    saveOrders(mergedOrders.slice(-PAPER_ORDERS_CAP));
+
+    // Alerts: union by id when file provides them
+    if (fileAlerts) {
+      const aOut = [];
+      const aSeen = new Set();
+      function pushAlerts(list) {
+        (list || []).forEach((a) => {
+          if (!a || typeof a !== "object") return;
+          const id = a.id != null ? String(a.id) : JSON.stringify(a);
+          if (aSeen.has(id)) return;
+          aSeen.add(id);
+          aOut.push(a);
+        });
+      }
+      pushAlerts(localAlerts);
+      pushAlerts(fileAlerts);
+      saveAlerts(aOut);
+    }
+    return true;
+  }
+
+  async function fetchAndMergePaperSim() {
+    try {
+      const res = await fetch(PAPER_SIM_URL + "?t=" + Date.now(), {
+        cache: "no-store",
+      });
+      if (!res.ok) return false;
+      const data = await res.json();
+      return mergePaperSimFromFile(data);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  async function commitPaperSimViaGithubPat() {
+    const pat = getGhPat();
+    if (!pat) return null;
+    const payload = buildPaperSimPayload();
+    const meta = await ghGetContentsJson(GH_PAPER_SIM_PATH);
+    const sha = meta && !meta.missing ? meta.sha : null;
+    await ghPutContentsJson(
+      GH_PAPER_SIM_PATH,
+      payload,
+      "paper-sim: update portfolio/orders",
+      sha
+    );
+    return { ok: true, paper_sim: payload };
+  }
+
+  async function tryCommitPaperSim(contextLabel) {
+    const label = contextLabel || "paper sim";
+    if (isLocalPreview()) {
+      try {
+        const result = await commitViaLocalApi(
+          "paper-sim",
+          buildPaperSimPayload()
+        );
+        setStatus(
+          "SIM " +
+            label +
+            " committed to paper-sim.json (localStorage + file).",
+          "ok"
+        );
+        return true;
+      } catch (err) {
+        setStatus(
+          "SIM " +
+            label +
+            " saved in localStorage only — commit failed: " +
+            (err && err.message ? err.message : err),
+          "warn"
+        );
+        return false;
+      }
+    }
+    if (getGhPat()) {
+      try {
+        await commitPaperSimViaGithubPat();
+        setStatus(
+          "SIM " + label + " committed via GitHub token (paper-sim.json).",
+          "ok"
+        );
+        return true;
+      } catch (err) {
+        setStatus(
+          "SIM " +
+            label +
+            " saved in this browser only — commit failed: " +
+            (err && err.message ? err.message : err),
+          "warn"
+        );
+        return false;
+      }
+    }
+    setStatus(
+      "SIM " +
+        label +
+        " saved in this browser only — add a commit token in Settings, or tell Helix.",
+      "warn"
+    );
+    return false;
   }
 
   function tickerLast(symbol) {
@@ -1134,7 +1671,7 @@
         " @ $" +
         fmtMoney(executionPrice) +
         (fee ? " + $" + fmtMoney(fee) + " fee" : "") +
-        " (localStorage only — not a real order).",
+        " (not a real order) — committing…",
       "ok"
     );
     renderPaperPanels();
@@ -1144,6 +1681,14 @@
       updateDetailTradeHint(sym);
       redrawChartMarkersNow(sym);
     }
+    // Persist shared paper-sim.json without blocking the UI forever.
+    Promise.resolve()
+      .then(function () {
+        return tryCommitPaperSim("filled " + side + " " + sym);
+      })
+      .catch(function () {
+        /* status already set inside tryCommit */
+      });
     return true;
   }
 
@@ -1684,9 +2229,16 @@
       return;
     }
     setStatus(
-      "Paper portfolio and order history reset. Local price alerts were left unchanged; use Clear all alerts to clear them.",
+      "Paper portfolio and order history reset. Local price alerts were left unchanged; committing paper-sim…",
       "ok"
     );
+    Promise.resolve()
+      .then(function () {
+        return tryCommitPaperSim("reset");
+      })
+      .catch(function () {
+        /* status already set */
+      });
   }
 
   function addPriceAlert() {
@@ -3325,15 +3877,24 @@
         })),
       };
       if (state.tickers.length > CAP) state.tickers = state.tickers.slice(0, CAP);
+
+      // Shared action-history markers + paper sim (same-origin JSON overlay).
+      await fetchAndMergeActionHistory();
+      backfillActionHistoryFromWatchlist();
+      await fetchAndMergePaperSim();
+
       render();
       checkPriceAlerts();
       const fromOverlay = !!overlay;
+      const histN = loadActionHistory().length;
       setStatus(
         "Loaded " +
           state.tickers.length +
           " ticker(s) from watchlist.json" +
           (fromOverlay ? " + local edits" : "") +
-          ".",
+          " · " +
+          histN +
+          " action-history marker(s).",
         "ok"
       );
     } catch (err) {

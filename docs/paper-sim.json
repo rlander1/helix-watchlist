@@ -1,0 +1,11 @@
+{
+  "updated_at": "2026-09-17T19:37:52-04:00",
+  "portfolio": {
+    "startingCash": 10000,
+    "cash": 10000,
+    "positions": {},
+    "realizedPnL": 0
+  },
+  "orders": [],
+  "alerts": []
+}

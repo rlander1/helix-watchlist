@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Helix Watchlist</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="app-header">
+      <div>
+        <h1>Helix Watchlist</h1>
+        <p class="subtitle">Forge dashboard · static · cap locked at 20</p>
+      </div>
+    </header>
+
+    <div class="disclaimer" role="note">
+      <strong>Research labels — not orders.</strong>
+      Action values (Buy / Hold / Sell / Watch / Trim) are research annotations only.
+      They do not place or imply brokerage orders.
+    </div>
+
+    <div class="meta-bar" id="metaBar">
+      <div class="meta-card"><div class="label">Updated</div><div class="value" id="metaUpdated">—</div></div>
+      <div class="meta-card"><div class="label">Count / Cap</div><div class="value" id="metaCount">—</div></div>
+      <div class="meta-card"><div class="label">Slots left</div><div class="value" id="metaSlots">—</div></div>
+      <div class="meta-card"><div class="label">Horizon</div><div class="value" id="metaHorizon">—</div></div>
+      <div class="meta-card"><div class="label">Status</div><div class="value" id="metaStatus">—</div></div>
+    </div>
+
+    <div class="toolbar">
+      <button type="button" class="primary" id="btnAdd">Add ticker</button>
+      <button type="button" id="btnRefresh">Refresh quotes</button>
+      <button type="button" id="btnRefreshStatuses" title="Reload Action statuses from watchlist.json (file actions win); re-apply local action-history markers">Refresh statuses</button>
+      <button type="button" id="btnDownload">Download JSON</button>
+      <button type="button" id="btnResetOverlay" title="Clear local edits overlay">Reset local edits</button>
+      <span class="spacer"></span>
+      <div class="status-msg" id="statusMsg"></div>
+    </div>
+
+    <div class="add-panel" id="addPanel">
+      <h2>Add ticker</h2>
+      <div class="add-grid">
+        <label class="field">Symbol *
+          <input id="addSymbol" type="text" maxlength="12" placeholder="e.g. AAPL" autocomplete="off" />
+        </label>
+        <label class="field">Name
+          <input id="addName" type="text" maxlength="80" placeholder="Optional" />
+        </label>
+        <label class="field">Action
+          <select id="addAction">
+            <option>Watch</option>
+            <option>Buy</option>
+            <option>Hold</option>
+            <option>Sell</option>
+            <option>Trim</option>
+          </select>
+        </label>
+        <label class="field">Size (USD)
+          <input id="addSize" type="number" min="0" step="100" placeholder="e.g. 2000" />
+        </label>
+      </div>
+      <label class="field" style="margin-bottom:0.75rem">Thesis / why
+        <textarea id="addWhy" maxlength="500" placeholder="Optional research note"></textarea>
+      </label>
+      <div class="add-actions">
+        <button type="button" class="primary" id="btnAddSubmit">Add to watchlist</button>
+        <button type="button" id="btnAddCancel">Cancel</button>
+      </div>
+    </div>
+
+    <div class="paper-panel trade-ticket-panel" id="tradeTicketPanel">
+        <div class="paper-panel-head">
+          <h2>New paper trade</h2>
+          <span class="optional">Always visible · SIMULATION only</span>
+        </div>
+        <div class="sim-banner" role="status">SIMULATION — not real orders · set Limit and Stop with the fill</div>
+        <div class="paper-trade-row trade-ticket-row">
+          <label class="field">Symbol
+            <input id="ticketSymbol" type="text" maxlength="12" placeholder="e.g. NVDA" autocomplete="off" list="ticketSymbolList" />
+            <datalist id="ticketSymbolList"></datalist>
+          </label>
+          <label class="field">Qty
+            <input id="ticketQty" type="number" min="0.0001" step="1" value="1" />
+          </label>
+          <label class="field">Entry / Price
+            <input id="ticketPrice" type="number" min="0.0001" step="0.01" placeholder="Live last" />
+          </label>
+          <label class="field">Limit / Target <span class="optional">optional</span>
+            <input id="ticketTarget" type="number" min="0.0001" step="0.01" placeholder="Limit" />
+          </label>
+          <label class="field">Stop <span class="optional">optional</span>
+            <input id="ticketStop" type="number" min="0.0001" step="0.01" placeholder="Stop" />
+          </label>
+          <label class="field">Fee <span class="optional">optional</span>
+            <input id="ticketFee" type="number" min="0" step="0.01" placeholder="0.00" />
+          </label>
+          <button type="button" class="paper-buy" id="btnTicketBuy">Paper Buy</button>
+          <button type="button" class="paper-sell" id="btnTicketSell">Paper Sell</button>
+        </div>
+        <p class="paper-trade-hint" id="ticketHint">Pick a watchlist symbol (or type one), set qty / entry / limit / stop, then Buy or Sell.</p>
+      </div>
+
+    <div class="table-wrap">
+      <table class="wl" id="wlTable">
+        <thead>
+          <tr>
+            <th>Symbol</th>
+            <th>Name</th>
+            <th>Last</th>
+            <th>Change</th>
+            <th>Change %</th>
+            <th title="Paper position market value (qty × last)">Paper size</th>
+            <th>Action</th>
+            <th>Why</th>
+            <th>Paper</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="wlBody"></tbody>
+      </table>
+    </div>
+
+    <div class="detail" id="detailPanel">
+      <h2 id="detailTitle">—</h2>
+      <p class="thesis" id="detailWhy"></p>
+      <div class="paper-trade-box" id="detailTradeBox">
+        <div class="sim-banner" role="status">SIMULATION — not real orders</div>
+        <div class="trade-entry-head">
+          <strong>Add paper trade</strong>
+          <span>Use the live quote or set a simulated fill plan.</span>
+        </div>
+        <div class="paper-trade-row">
+          <label class="field">Qty
+            <input id="detailTradeQty" type="number" min="0.0001" step="1" value="1" />
+          </label>
+          <label class="field">Price
+            <input id="detailTradePrice" type="number" min="0.0001" step="0.01" placeholder="Live last" />
+          </label>
+          <label class="field">Fee <span class="optional">optional</span>
+            <input id="detailTradeFee" type="number" min="0" step="0.01" placeholder="0.00" />
+          </label>
+          <label class="field">Limit / Target <span class="optional">optional</span>
+            <input id="detailTradeTarget" type="number" min="0.0001" step="0.01" placeholder="Limit price" />
+          </label>
+          <label class="field">Stop <span class="optional">optional</span>
+            <input id="detailTradeStop" type="number" min="0.0001" step="0.01" placeholder="Stop price" />
+          </label>
+          <button type="button" class="paper-buy" id="btnDetailBuy" data-stop="1">Paper Buy</button>
+          <button type="button" class="paper-sell" id="btnDetailSell" data-stop="1">Paper Sell</button>
+          <span class="paper-trade-hint" id="detailTradeHint"></span>
+        </div>
+      </div>
+      <div class="history-controls" role="group" aria-label="History range">
+        <span class="history-label">History</span>
+        <button type="button" class="range-btn" data-range="1d" aria-pressed="true">1 day</button>
+        <button type="button" class="range-btn" data-range="5d" aria-pressed="false">5 day</button>
+        <button type="button" class="range-btn" data-range="10d" aria-pressed="false">10 day</button>
+        <button type="button" class="range-btn" data-range="1mo" aria-pressed="false">1 month</button>
+      </div>
+      <div class="chart-box">
+        <canvas id="sparkCanvas" width="800" height="200" aria-label="Price history chart"></canvas>
+        <div class="chart-hover" id="chartHoverTip" hidden></div>
+        <div class="chart-msg" id="chartMsg"></div>
+        <div class="marker-empty" id="markerEmpty">no status changes yet</div>
+        <div class="marker-legend" id="markerLegend" hidden></div>
+      </div>
+      <div class="notes">
+        <label for="noteArea">Local notes (saved in this browser only)</label>
+        <textarea id="noteArea" placeholder="Private notes for this symbol…"></textarea>
+      </div>
+      <p style="margin:0.75rem 0 0"><a class="source" id="detailSource" href="#" target="_blank" rel="noopener">Yahoo Finance</a></p>
+    </div>
+
+    <section class="paper-section" id="paperSection" aria-label="Paper trading simulation">
+      <div class="sim-banner sim-banner-lg" role="status">
+        <strong>SIMULATION — not real orders.</strong>
+        Paper buys/sells update localStorage only. No broker APIs. No real money.
+      </div>
+
+      
+      
+      <div class="paper-grid">
+        <div class="paper-panel" id="portfolioPanel">
+          <div class="paper-panel-head">
+            <h2>Paper portfolio</h2>
+            <button type="button" class="sm danger" id="btnResetPaper" title="Reset portfolio and order history">Reset sim</button>
+          </div>
+          <div class="paper-stats" id="portfolioStats">
+            <div class="meta-card"><div class="label">Starting cash</div>
+              <div class="value edit-cash">
+                <span>$</span>
+                <input id="startingCashInput" type="number" min="0" step="100" title="Edit starting cash (resets cash when no positions)" />
+              </div>
+            </div>
+            <div class="meta-card"><div class="label">Cash remaining</div><div class="value" id="paperCash">—</div></div>
+            <div class="meta-card"><div class="label">Total equity</div><div class="value" id="paperEquity">—</div></div>
+            <div class="meta-card"><div class="label">Unrealized P&amp;L</div><div class="value" id="paperUnrealized">—</div></div>
+            <div class="meta-card"><div class="label">Realized P&amp;L</div><div class="value" id="paperRealized">—</div></div>
+            <div class="meta-card"><div class="label">Filled trades</div><div class="value" id="paperTradeCount">—</div></div>
+            <div class="meta-card"><div class="label">Wins / losses</div><div class="value" id="paperWinLoss">—</div></div>
+            <div class="meta-card"><div class="label">Net P&amp;L</div><div class="value" id="paperNetPnl">—</div></div>
+          </div>
+          <div class="table-wrap paper-table-wrap">
+            <table class="wl paper-pos">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Qty</th>
+                  <th>Avg cost</th>
+                  <th>Mkt value</th>
+                  <th>Unrealized</th>
+                </tr>
+              </thead>
+              <tbody id="paperPosBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="paper-panel" id="ordersPanel">
+          <div class="paper-panel-head">
+            <h2>Simulated order history</h2>
+          </div>
+          <div class="table-wrap paper-table-wrap">
+            <table class="wl paper-orders">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Symbol</th>
+                  <th>Side</th>
+                  <th>Qty</th>
+                  <th>Price</th>
+                  <th>Fee</th>
+                  <th>Plan</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="paperOrdersBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="paper-panel alerts-panel" id="alertsPanel">
+        <div class="paper-panel-head">
+          <h2>Local price alerts</h2>
+          <button type="button" class="sm danger" id="btnClearAlerts">Clear all</button>
+        </div>
+        <div class="alert-form">
+          <label class="field">Symbol
+            <input id="alertSymbol" type="text" maxlength="12" placeholder="e.g. NVDA" autocomplete="off" list="alertSymbolList" />
+            <datalist id="alertSymbolList"></datalist>
+          </label>
+          <label class="field">Direction
+            <select id="alertDir">
+              <option value="above">Above</option>
+              <option value="below">Below</option>
+            </select>
+          </label>
+          <label class="field">Threshold
+            <input id="alertThreshold" type="number" step="0.01" min="0" placeholder="Price" />
+          </label>
+          <button type="button" class="primary" id="btnAddAlert">Add alert</button>
+        </div>
+        <div class="alert-fired-banner" id="alertFiredBanner" hidden></div>
+        <ul class="alert-list" id="alertList"></ul>
+      </div>
+    </section>
+
+    <footer>
+      Helix Watchlist · Forge Bot #3 · data from <code>watchlist.json</code> · prices never invented · paper trades are simulation only
+    </footer>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

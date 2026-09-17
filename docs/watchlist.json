@@ -1,0 +1,69 @@
+{
+  "updated_at": "2026-09-17T16:15:12-04:00",
+  "status": "committed",
+  "cap": 20,
+  "horizon": "up to 2 weeks",
+  "book_usd": 10000,
+  "tickers": [
+    {
+      "symbol": "SKHY",
+      "name": "SK hynix Inc.",
+      "last": 183.41,
+      "change": 8.54,
+      "change_pct": 4.88,
+      "currency": "USD",
+      "action": "Buy",
+      "action_why": "Intel\u2013Ohio memory talks headline today \u2014 short-dated HBM/memory tape follow-through.",
+      "size_usd": 2000,
+      "source": "https://finance.yahoo.com/quote/SKHY"
+    },
+    {
+      "symbol": "TSLA",
+      "name": "Tesla, Inc.",
+      "last": 368.2,
+      "change": 10.13,
+      "change_pct": 2.83,
+      "currency": "USD",
+      "action": "Sell",
+      "action_why": "NHTSA Cybercab Special Order sworn response due Sept 30 \u2014 binary regulatory risk inside ~2 weeks.",
+      "size_usd": 2000,
+      "source": "https://finance.yahoo.com/quote/TSLA"
+    },
+    {
+      "symbol": "SPCX",
+      "name": "Space Exploration Technologies Corp.",
+      "last": 154.88,
+      "change": 4.0,
+      "change_pct": 2.65,
+      "currency": "USD",
+      "action": "Buy",
+      "action_why": "Starship Flight 14 orbital attempt targeted NET Sept 28 (FAA pending) \u2014 clear ~5-day event catalyst.",
+      "size_usd": 2000,
+      "source": "https://finance.yahoo.com/quote/SPCX"
+    },
+    {
+      "symbol": "LASR",
+      "name": "nLIGHT, Inc.",
+      "last": 38.85,
+      "change": 0.29,
+      "change_pct": 0.77,
+      "currency": "USD",
+      "action": "Sell",
+      "action_why": "No discrete \u22642-week catalyst; post-guidance digest after Q3 cut and recent 10b5-1 CEO sales.",
+      "size_usd": 2000,
+      "source": "https://finance.yahoo.com/quote/LASR"
+    },
+    {
+      "symbol": "NVDA",
+      "name": "NVIDIA Corporation",
+      "last": 219.27,
+      "change": 5.37,
+      "change_pct": 2.51,
+      "currency": "USD",
+      "action": "Buy",
+      "action_why": "Trump\u2013Xi Washington week (~Sept 24) with Huang at state dinner = short-dated chip/AI headline beta.",
+      "size_usd": 2000,
+      "source": "https://finance.yahoo.com/quote/NVDA"
+    }
+  ]
+}

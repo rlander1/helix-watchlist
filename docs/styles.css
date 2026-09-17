@@ -197,7 +197,14 @@ table.wl tbody tr {
 table.wl tbody tr:hover { background: rgba(59, 130, 246, 0.08); }
 table.wl tbody tr.selected { background: rgba(59, 130, 246, 0.14); }
 
-.sym { font-weight: 700; letter-spacing: 0.02em; }
+.sym {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+}
 .name { color: var(--muted); font-size: 0.82rem; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .num { font-variant-numeric: tabular-nums; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .pos { color: var(--pos); }
@@ -615,3 +622,55 @@ button.paper-sell:hover:not(:disabled) {
   display: block !important;
 }
 
+
+
+/* Settings + public-file pending badge */
+.settings-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem;
+  margin-bottom: 1rem;
+  display: none;
+}
+.settings-panel.open { display: block; }
+.settings-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.65rem;
+}
+.settings-panel h2 { margin: 0; font-size: 1rem; }
+.settings-help {
+  font-size: 0.85rem;
+  color: var(--text);
+  margin: 0 0 0.5rem;
+  line-height: 1.45;
+}
+.settings-help.muted { color: var(--muted); }
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.65rem;
+}
+.settings-pat-status {
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin: 0.55rem 0 0;
+  min-height: 1.1em;
+}
+.settings-pat-status.ok { color: var(--buy); }
+.badge.not-public-badge {
+  display: inline-block;
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 0.12rem 0.4rem;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.18);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  white-space: nowrap;
+}

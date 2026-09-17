@@ -8,6 +8,12 @@
   const ACTION_HISTORY_KEY = "helix-action-history";
   const ACTION_HISTORY_CAP = 500;
   const DATA_URL = "watchlist.json";
+  const GH_PAT_KEY = "helix-gh-pat";
+  const PENDING_KEY = "helix-pending-symbols";
+  const GH_REPO = "rlander1/helix-watchlist";
+  const GH_PATH = "docs/watchlist.json";
+  const PAGES_WATCHLIST_URL =
+    "https://rlander1.github.io/helix-watchlist/watchlist.json";
   const PAPER_PORTFOLIO_KEY = "helix-paper-portfolio";
   const PAPER_ORDERS_KEY = "helix-paper-orders";
   const PRICE_ALERTS_KEY = "helix-price-alerts";
@@ -78,6 +84,402 @@
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
   }
+
+
+  function isLocalPreview() {
+    const h = (location.hostname || "").toLowerCase();
+    return h === "localhost" || h === "127.0.0.1" || h === "[::1]";
+  }
+
+  function loadPendingSymbols() {
+    try {
+      const raw = localStorage.getItem(PENDING_KEY);
+      const arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr.map((s) => String(s).toUpperCase()) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function savePendingSymbols(list) {
+    const uniq = Array.from(
+      new Set((list || []).map((s) => String(s).toUpperCase()).filter(Boolean))
+    );
+    localStorage.setItem(PENDING_KEY, JSON.stringify(uniq));
+  }
+
+  function markPending(symbol) {
+    const list = loadPendingSymbols();
+    const sym = String(symbol).toUpperCase();
+    if (!list.includes(sym)) list.push(sym);
+    savePendingSymbols(list);
+  }
+
+  function clearPending(symbol) {
+    const sym = String(symbol).toUpperCase();
+    savePendingSymbols(loadPendingSymbols().filter((s) => s !== sym));
+  }
+
+  function isPending(symbol) {
+    return loadPendingSymbols().includes(String(symbol).toUpperCase());
+  }
+
+  function getGhPat() {
+    try {
+      return (localStorage.getItem(GH_PAT_KEY) || "").trim();
+    } catch {
+      return "";
+    }
+  }
+
+  function setGhPat(token) {
+    const t = (token || "").trim();
+    if (!t) {
+      localStorage.removeItem(GH_PAT_KEY);
+      return;
+    }
+    localStorage.setItem(GH_PAT_KEY, t);
+  }
+
+  function utf8ToBase64(str) {
+    const bytes = new TextEncoder().encode(str);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary);
+  }
+
+  function buildWatchlistPayload() {
+    return {
+      updated_at: state.updated_at,
+      status: state.status || "committed",
+      cap: CAP,
+      horizon: state.horizon,
+      book_usd: state.book_usd,
+      tickers: state.tickers.map((t) => ({
+        symbol: t.symbol,
+        name: t.name || "",
+        last: t.last != null ? t.last : null,
+        change: t.change != null ? t.change : null,
+        change_pct: t.change_pct != null ? t.change_pct : null,
+        currency: t.currency || "USD",
+        action: normalizeAction(t.action),
+        action_why: t.action_why || "",
+        size_usd: t.size_usd != null ? t.size_usd : null,
+        source:
+          t.source ||
+          "https://finance.yahoo.com/quote/" + encodeURIComponent(t.symbol),
+      })),
+      committed_count: state.tickers.length,
+      notes: "",
+    };
+  }
+
+  function applyWatchlistData(data, opts) {
+    const options = opts || {};
+    if (!data || !Array.isArray(data.tickers)) return;
+    if (options.setBase) baseFromFile = data;
+    state = {
+      updated_at: data.updated_at || state.updated_at || "",
+      status: data.status || state.status || "committed",
+      cap: CAP,
+      horizon: data.horizon != null ? data.horizon : state.horizon,
+      book_usd: data.book_usd != null ? data.book_usd : state.book_usd,
+      tickers: data.tickers.slice(0, CAP).map((t) => ({
+        ...t,
+        action: normalizeAction(t.action),
+      })),
+    };
+    if (options.clearOverlay) {
+      try {
+        localStorage.removeItem(STORAGE_KEY);
+      } catch (_) {
+        /* ignore */
+      }
+    } else {
+      saveOverlay();
+    }
+    render();
+  }
+
+  async function reloadFromWatchlistFile() {
+    const res = await fetch(DATA_URL + "?t=" + Date.now());
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    applyWatchlistData(data, { setBase: true, clearOverlay: false });
+    // Drop pending flags for symbols now confirmed on file.
+    const fileSyms = new Set(
+      (data.tickers || []).map((t) => String(t.symbol).toUpperCase())
+    );
+    savePendingSymbols(
+      loadPendingSymbols().filter((s) => !fileSyms.has(s))
+    );
+    render();
+    return data;
+  }
+
+  async function commitViaLocalApi(action, body) {
+    const path =
+      action === "remove" ? "/api/commit-remove" : "/api/commit-add";
+    const res = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+    });
+    let payload = null;
+    try {
+      payload = await res.json();
+    } catch (_) {
+      payload = null;
+    }
+    if (!res.ok || !payload || !payload.ok) {
+      const err =
+        (payload && payload.error) ||
+        "HTTP " + res.status + " commit failed";
+      const e = new Error(err);
+      e.payload = payload;
+      throw e;
+    }
+    return payload;
+  }
+
+  async function commitViaGithubPat(message) {
+    const pat = getGhPat();
+    if (!pat) return null;
+    const getRes = await fetch(
+      "https://api.github.com/repos/" + GH_REPO + "/contents/" + GH_PATH,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer " + pat,
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      }
+    );
+    if (!getRes.ok) {
+      throw new Error(
+        "GitHub Contents GET failed (HTTP " +
+          getRes.status +
+          "). Check token Contents R/W on " +
+          GH_REPO +
+          " only."
+      );
+    }
+    const meta = await getRes.json();
+    const sha = meta && meta.sha;
+    if (!sha) throw new Error("GitHub Contents response missing sha");
+    const payload = buildWatchlistPayload();
+    const content = utf8ToBase64(JSON.stringify(payload, null, 2) + "\n");
+    const putRes = await fetch(
+      "https://api.github.com/repos/" + GH_REPO + "/contents/" + GH_PATH,
+      {
+        method: "PUT",
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer " + pat,
+          "Content-Type": "application/json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+        body: JSON.stringify({
+          message: message,
+          content: content,
+          sha: sha,
+        }),
+      }
+    );
+    if (!putRes.ok) {
+      let detail = "HTTP " + putRes.status;
+      try {
+        const errBody = await putRes.json();
+        if (errBody && errBody.message) detail = errBody.message;
+      } catch (_) {
+        /* ignore */
+      }
+      throw new Error("GitHub Contents PUT failed: " + detail);
+    }
+    // Refresh from Pages (or local file) after commit.
+    try {
+      const url = isLocalPreview()
+        ? DATA_URL + "?t=" + Date.now()
+        : PAGES_WATCHLIST_URL + "?t=" + Date.now();
+      const fres = await fetch(url, { cache: "no-store" });
+      if (fres.ok) {
+        const data = await fres.json();
+        applyWatchlistData(data, { setBase: true });
+      }
+    } catch (_) {
+      /* keep local state */
+    }
+    return { ok: true };
+  }
+
+  async function tryCommitAdd(ticker) {
+    const sym = ticker.symbol;
+    if (isLocalPreview()) {
+      try {
+        const result = await commitViaLocalApi("add", {
+          symbol: sym,
+          name: ticker.name || "",
+          action: ticker.action || "Watch",
+          action_why: ticker.action_why || "",
+          size_usd: ticker.size_usd,
+        });
+        if (result.watchlist) {
+          applyWatchlistData(result.watchlist, { setBase: true });
+        } else {
+          await reloadFromWatchlistFile();
+        }
+        clearPending(sym);
+        render();
+        setStatus(
+          "Committed add " +
+            sym +
+            " to public watchlist (" +
+            (result.count != null ? result.count : state.tickers.length) +
+            "/" +
+            CAP +
+            ").",
+          "ok"
+        );
+        return true;
+      } catch (err) {
+        markPending(sym);
+        render();
+        setStatus(
+          "Added " +
+            sym +
+            " locally — not on public file yet. " +
+            (err && err.message ? err.message : err) +
+            " Download JSON or tell Helix to commit " +
+            sym +
+            ".",
+          "warn"
+        );
+        return false;
+      }
+    }
+
+    // Public Pages: always keep overlay; try PAT commit if present.
+    markPending(sym);
+    render();
+    if (getGhPat()) {
+      try {
+        await commitViaGithubPat("watchlist: add " + sym);
+        clearPending(sym);
+        render();
+        setStatus(
+          "Committed add " + sym + " via GitHub token (Contents API).",
+          "ok"
+        );
+        return true;
+      } catch (err) {
+        downloadJson();
+        setStatus(
+          "Saved in this browser only — commit failed (" +
+            (err && err.message ? err.message : err) +
+            "). Token stays in localStorage only; or tell Helix to commit " +
+            sym +
+            ".",
+          "warn"
+        );
+        return false;
+      }
+    }
+    downloadJson();
+    setStatus(
+      "Saved in this browser only — add a commit token in Settings, or tell Helix to commit " +
+        sym +
+        ".",
+      "warn"
+    );
+    return false;
+  }
+
+  async function tryCommitRemove(sym) {
+    if (isLocalPreview()) {
+      try {
+        const result = await commitViaLocalApi("remove", { symbol: sym });
+        if (result.watchlist) {
+          applyWatchlistData(result.watchlist, { setBase: true });
+        } else {
+          await reloadFromWatchlistFile();
+        }
+        clearPending(sym);
+        render();
+        setStatus(
+          "Committed remove " +
+            sym +
+            " from public watchlist (" +
+            (result.count != null ? result.count : state.tickers.length) +
+            "/" +
+            CAP +
+            ").",
+          "ok"
+        );
+        return true;
+      } catch (err) {
+        markPending(sym);
+        render();
+        setStatus(
+          "Removed " +
+            sym +
+            " locally — public file not updated. " +
+            (err && err.message ? err.message : err),
+          "warn"
+        );
+        return false;
+      }
+    }
+
+    if (getGhPat()) {
+      try {
+        await commitViaGithubPat("watchlist: remove " + sym);
+        clearPending(sym);
+        render();
+        setStatus(
+          "Committed remove " + sym + " via GitHub token (Contents API).",
+          "ok"
+        );
+        return true;
+      } catch (err) {
+        markPending(sym);
+        render();
+        downloadJson();
+        setStatus(
+          "Removed in this browser only — commit failed (" +
+            (err && err.message ? err.message : err) +
+            "). Or tell Helix to remove " +
+            sym +
+            ".",
+          "warn"
+        );
+        return false;
+      }
+    }
+    markPending(sym);
+    render();
+    setStatus(
+      "Removed in this browser only — add a commit token in Settings, or tell Helix to remove " +
+        sym +
+        ".",
+      "warn"
+    );
+    return false;
+  }
+
+  function syncSettingsPatUi() {
+    const input = $("settingsPat");
+    const status = $("settingsPatStatus");
+    if (!input || !status) return;
+    const has = !!getGhPat();
+    // Never put the real token back into the field after save.
+    if (!input.dataset.editing) input.value = "";
+    input.placeholder = has ? "Token saved in this browser (hidden)" : "ghp_… fine-grained PAT";
+    status.textContent = has
+      ? "Token present in localStorage (never written to disk/repo)."
+      : "No token — Pages Add/Remove stay overlay-only until you add one or tell Helix.";
+    status.className = "settings-pat-status" + (has ? " ok" : "");
+  }
+
 
   function loadNotes() {
     try {
@@ -304,9 +706,14 @@
         ? escapeHtml(t.action_why)
         : '<span class="missing">-</span>';
 
+      const pendingBadge = isPending(t.symbol)
+        ? '<span class="badge not-public-badge" title="Saved in this browser; not confirmed on public watchlist.json">Not on public file yet</span>'
+        : "";
+
       tr.innerHTML =
         '<td><div class="sym">' +
         escapeHtml(t.symbol) +
+        pendingBadge +
         "</div></td>" +
         '<td><div class="name" title="' +
         escapeAttr(t.name || "") +
@@ -413,7 +820,7 @@
     removeTicker(sym);
   }
 
-  function removeTicker(sym) {
+  async function removeTicker(sym) {
     const i = state.tickers.findIndex((t) => t.symbol === sym);
     if (i < 0) {
       setStatus("Could not find " + sym + " to remove.", "err");
@@ -425,9 +832,11 @@
       selectedSymbol = null;
       $("detailPanel").classList.remove("open");
     }
+    clearPending(sym);
     saveOverlay();
     render();
-    setStatus("Removed " + sym + " (local overlay)", "ok");
+    setStatus("Removed " + sym + " (local) — committing…", "ok");
+    await tryCommitRemove(sym);
   }
 
   function escapeHtml(s) {
@@ -2236,7 +2645,7 @@
     setStatus("Downloaded updated watchlist.json", "ok");
   }
 
-  function addTicker() {
+  async function addTicker() {
     if (state.tickers.length >= CAP) {
       setStatus(
         "Hard stop: watchlist is at cap (" + CAP + "). Cannot add a 21st ticker.",
@@ -2260,7 +2669,7 @@
     const sizeRaw = ($("addSize").value || "").trim();
     const size_usd = sizeRaw === "" ? null : Number(sizeRaw);
 
-    state.tickers.push({
+    const ticker = {
       symbol: raw,
       name: name || raw,
       last: null,
@@ -2271,8 +2680,10 @@
       action_why: why,
       size_usd: size_usd != null && !Number.isNaN(size_usd) ? size_usd : null,
       source: "https://finance.yahoo.com/quote/" + encodeURIComponent(raw),
-    });
+    };
+    state.tickers.push(ticker);
     state.updated_at = new Date().toISOString();
+    markPending(raw);
     saveOverlay();
     $("addPanel").classList.remove("open");
     $("addSymbol").value = "";
@@ -2287,9 +2698,10 @@
         state.tickers.length +
         "/" +
         CAP +
-        "). Download JSON to persist to disk.",
+        ") — committing to public file…",
       "ok"
     );
+    await tryCommitAdd(ticker);
   }
 
   function wireUi() {
@@ -2396,6 +2808,58 @@
         }
       });
     }
+
+    const btnSettings = $("btnSettings");
+    const settingsPanel = $("settingsPanel");
+    if (btnSettings && settingsPanel) {
+      btnSettings.addEventListener("click", () => {
+        settingsPanel.classList.toggle("open");
+        syncSettingsPatUi();
+      });
+    }
+    const btnSettingsClose = $("btnSettingsClose");
+    if (btnSettingsClose && settingsPanel) {
+      btnSettingsClose.addEventListener("click", () => {
+        settingsPanel.classList.remove("open");
+      });
+    }
+    const patInput = $("settingsPat");
+    if (patInput) {
+      patInput.addEventListener("input", () => {
+        patInput.dataset.editing = "1";
+      });
+    }
+    const btnSavePat = $("btnSavePat");
+    if (btnSavePat) {
+      btnSavePat.addEventListener("click", () => {
+        const val = ($("settingsPat") && $("settingsPat").value) || "";
+        setGhPat(val);
+        if ($("settingsPat")) {
+          $("settingsPat").value = "";
+          delete $("settingsPat").dataset.editing;
+        }
+        syncSettingsPatUi();
+        setStatus(
+          getGhPat()
+            ? "Commit token saved in this browser only (localStorage)."
+            : "Commit token cleared.",
+          "ok"
+        );
+      });
+    }
+    const btnClearPat = $("btnClearPat");
+    if (btnClearPat) {
+      btnClearPat.addEventListener("click", () => {
+        setGhPat("");
+        if ($("settingsPat")) {
+          $("settingsPat").value = "";
+          delete $("settingsPat").dataset.editing;
+        }
+        syncSettingsPatUi();
+        setStatus("Commit token cleared from this browser.", "ok");
+      });
+    }
+    syncSettingsPatUi();
   }
 
   async function bootstrap() {

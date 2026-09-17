@@ -35,8 +35,33 @@
       <button type="button" id="btnRefreshStatuses" title="Reload Action statuses from watchlist.json (file actions win); re-apply local action-history markers">Refresh statuses</button>
       <button type="button" id="btnDownload">Download JSON</button>
       <button type="button" id="btnResetOverlay" title="Clear local edits overlay">Reset local edits</button>
+      <button type="button" id="btnSettings" title="Commit token settings (Pages)">Settings</button>
       <span class="spacer"></span>
       <div class="status-msg" id="statusMsg"></div>
+    </div>
+
+    <div class="settings-panel" id="settingsPanel">
+      <div class="settings-panel-head">
+        <h2>Settings</h2>
+        <button type="button" class="sm" id="btnSettingsClose">Close</button>
+      </div>
+      <p class="settings-help">
+        Optional GitHub fine-grained PAT for committing Add/Remove from the public Pages site.
+        Stored <strong>only</strong> in this browser (<code>localStorage</code> key <code>helix-gh-pat</code>) —
+        never logged, never written to disk or the repo. Scope: Contents Read/Write on
+        <code>rlander1/helix-watchlist</code> only.
+      </p>
+      <p class="settings-help muted">
+        Local preview (<code>127.0.0.1:8765</code>) commits via the server <code>gh</code> CLI — no PAT needed.
+      </p>
+      <label class="field">GitHub fine-grained PAT
+        <input id="settingsPat" type="password" autocomplete="off" spellcheck="false" placeholder="ghp_… fine-grained PAT" />
+      </label>
+      <div class="settings-actions">
+        <button type="button" class="primary" id="btnSavePat">Save token</button>
+        <button type="button" id="btnClearPat">Clear token</button>
+      </div>
+      <p class="settings-pat-status" id="settingsPatStatus"></p>
     </div>
 
     <div class="add-panel" id="addPanel">

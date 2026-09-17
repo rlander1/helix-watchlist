@@ -153,6 +153,13 @@
     return btoa(binary);
   }
 
+  function base64ToUtf8(b64) {
+    const binary = atob(String(b64 || "").replace(/\s/g, ""));
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return new TextDecoder("utf-8").decode(bytes);
+  }
+
   function buildWatchlistPayload() {
     return {
       updated_at: state.updated_at,
@@ -2551,9 +2558,76 @@
     return res.json();
   }
 
+  /** Authenticated Contents API — avoid raw.githubusercontent CDN lag. */
+  async function fetchWatchlistViaContents(pat) {
+    const res = await fetch(
+      "https://api.github.com/repos/" + GH_REPO + "/contents/" + GH_PATH + "?t=" + Date.now(),
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer " + pat,
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+        cache: "no-store",
+      }
+    );
+    if (!res.ok) throw new Error("Contents GET HTTP " + res.status);
+    const meta = await res.json();
+    if (!meta || !meta.content) throw new Error("Contents missing content");
+    const textJson = base64ToUtf8(meta.content);
+    return JSON.parse(textJson);
+  }
+
+  async function fetchLatestQuoteDispatchRun(pat, sinceMs) {
+    const url =
+      "https://api.github.com/repos/" +
+      GH_REPO +
+      "/actions/workflows/" +
+      QUOTE_WORKFLOW +
+      "/runs?event=workflow_dispatch&per_page=8";
+    const res = await fetch(url, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: "Bearer " + pat,
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const body = await res.json();
+    const runs = (body && body.workflow_runs) || [];
+    const cutoff = (sinceMs || 0) - 45000;
+    for (let i = 0; i < runs.length; i++) {
+      const run = runs[i];
+      const created = Date.parse(run.created_at || "") || 0;
+      if (created >= cutoff) return run;
+    }
+    return runs[0] || null;
+  }
+
+  function applyRefreshedWatchlist(data, sourceLabel) {
+    applyWatchlistData(data, { setBase: true, clearOverlay: false });
+    quotesCorsBlocked = false;
+    render();
+    checkPriceAlerts();
+    if (selectedSymbol) {
+      updateDetailTradeHint(selectedSymbol);
+      drawHistoryChart(selectedSymbol);
+    }
+    setStatus(
+      "Quotes refreshed via GitHub Action (" +
+        (data.tickers ? data.tickers.length : state.tickers.length) +
+        " tickers). Source: " +
+        sourceLabel +
+        " — no invented prices.",
+      "ok"
+    );
+  }
+
   /**
    * Public Pages: trigger GitHub Action to refresh quotes server-side, then
-   * poll raw.githubusercontent.com (never invent prices; avoid Pages CDN lag).
+   * poll Contents API with PAT (not raw CDN) until stamp changes; also watch
+   * workflow_dispatch run status. Timeout ~180s.
    */
   async function refreshQuotesViaGithubAction() {
     const pat = getGhPat();
@@ -2572,14 +2646,20 @@
       baseFromFile || { updated_at: state.updated_at }
     );
     try {
-      const cur = await fetchRawWatchlist();
+      const cur = await fetchWatchlistViaContents(pat);
       baseline = watchlistStamp(cur) || baseline;
     } catch (_) {
-      /* keep baseline from state */
+      try {
+        const cur = await fetchRawWatchlist();
+        baseline = watchlistStamp(cur) || baseline;
+      } catch (__) {
+        /* keep baseline from state */
+      }
     }
 
     setStatus("Refreshing quotes via GitHub Action…");
     $("btnRefresh").disabled = true;
+    const dispatchedAt = Date.now();
     try {
       const disp = await fetch(
         "https://api.github.com/repos/" +
@@ -2622,43 +2702,90 @@
         return;
       }
 
-      const deadline = Date.now() + 120000;
+      const deadline = Date.now() + 180000;
       let lastErr = null;
+      let runSeen = null;
       while (Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 4000));
+        await new Promise((r) => setTimeout(r, 3500));
+
+        // Prefer Contents stamp change even if Actions list is slow.
         try {
-          const data = await fetchRawWatchlist();
+          const data = await fetchWatchlistViaContents(pat);
           const stamp = watchlistStamp(data);
           if (stamp && stamp !== baseline) {
-            applyWatchlistData(data, { setBase: true, clearOverlay: false });
-            // Keep overlay ticker edits but prefer fresh quotes from file for known symbols.
-            quotesCorsBlocked = false;
-            render();
-            checkPriceAlerts();
-            if (selectedSymbol) {
-              updateDetailTradeHint(selectedSymbol);
-              drawHistoryChart(selectedSymbol);
-            }
-            setStatus(
-              "Quotes refreshed via GitHub Action (" +
-                (data.tickers ? data.tickers.length : state.tickers.length) +
-                " tickers). Source: raw docs/watchlist.json — no invented prices.",
-              "ok"
-            );
+            applyRefreshedWatchlist(data, "GitHub Contents API docs/watchlist.json");
             return;
           }
-          setStatus(
-            "GitHub Action running… waiting for quote file update…",
-            "warn"
-          );
         } catch (err) {
           lastErr = err;
         }
+
+        try {
+          const run = await fetchLatestQuoteDispatchRun(pat, dispatchedAt);
+          if (run) {
+            runSeen = run;
+            if (run.status === "completed") {
+              if (run.conclusion && run.conclusion !== "success") {
+                setStatus(
+                  "Quote Action failed (" +
+                    (run.conclusion || "unknown") +
+                    "; run " +
+                    (run.id || "?") +
+                    "). Prices kept from watchlist.json (no invented prices).",
+                  "err"
+                );
+                return;
+              }
+              // Success but Contents may still lag a beat — keep polling Contents.
+              setStatus(
+                "Action finished; waiting for Contents docs/watchlist.json…",
+                "warn"
+              );
+              continue;
+            }
+            setStatus(
+              "GitHub Action " +
+                (run.status || "queued") +
+                "… waiting for Contents update…",
+              "warn"
+            );
+            continue;
+          }
+        } catch (err) {
+          lastErr = err;
+        }
+
+        setStatus(
+          "GitHub Action running… waiting for Contents quote update…",
+          "warn"
+        );
+      }
+
+      // Final Contents check before declaring timeout.
+      try {
+        const data = await fetchWatchlistViaContents(pat);
+        const stamp = watchlistStamp(data);
+        if (stamp && stamp !== baseline) {
+          applyRefreshedWatchlist(data, "GitHub Contents API docs/watchlist.json");
+          return;
+        }
+      } catch (err) {
+        lastErr = err;
+      }
+
+      let extra = "";
+      if (runSeen && runSeen.status === "completed" && runSeen.conclusion === "success") {
+        extra =
+          " Action run " +
+          (runSeen.id || "") +
+          " succeeded but Contents stamp still matched baseline.";
+      } else if (lastErr && lastErr.message) {
+        extra = " (" + lastErr.message + ")";
       }
       setStatus(
-        "Timed out waiting for Action quote update" +
-          (lastErr && lastErr.message ? " (" + lastErr.message + ")" : "") +
-          ". Prices kept from watchlist.json (no invented prices). Try again shortly.",
+        "Timed out waiting for Action quote update (~180s)." +
+          extra +
+          " Prices kept from watchlist.json (no invented prices). Try again shortly.",
         "warn"
       );
     } finally {

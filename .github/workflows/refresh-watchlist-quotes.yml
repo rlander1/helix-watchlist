@@ -1,0 +1,47 @@
+# Refresh docs/watchlist.json from Yahoo public chart API, then push so Pages rebuilds.
+# Simulation / research only — no broker secrets. Uses default GITHUB_TOKEN.
+name: Refresh watchlist quotes
+
+on:
+  schedule:
+    # Weekdays America/New_York wall clock during EDT (UTC-4):
+    #   9:30 AM ET market open  → 13:30 UTC
+    #   4:00 PM ET near close   → 20:00 UTC
+    # During EST (UTC-5) these fire one hour later on the ET clock — adjust if needed.
+    - cron: "30 13 * * 1-5"
+    - cron: "0 20 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-watchlist-quotes
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch Yahoo quotes into docs/watchlist.json
+        run: python3 scripts/refresh_watchlist_quotes.py
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "helix-watchlist-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/watchlist.json
+          if git diff --cached --quiet; then
+            echo "No quote changes to commit."
+            exit 0
+          fi
+          git commit -m "Refresh watchlist quotes from Yahoo (weekday Action)."
+          git push origin HEAD:main

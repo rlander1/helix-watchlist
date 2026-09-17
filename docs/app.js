@@ -14,6 +14,10 @@
   const GH_PATH = "docs/watchlist.json";
   const PAGES_WATCHLIST_URL =
     "https://rlander1.github.io/helix-watchlist/watchlist.json";
+  // Prefer raw GitHub after commits — Pages CDN can lag and make Add look failed.
+  const RAW_WATCHLIST_URL =
+    "https://raw.githubusercontent.com/rlander1/helix-watchlist/main/docs/watchlist.json";
+  let commitInFlight = false;
   const PAPER_PORTFOLIO_KEY = "helix-paper-portfolio";
   const PAPER_ORDERS_KEY = "helix-paper-orders";
   const PRICE_ALERTS_KEY = "helix-price-alerts";
@@ -296,20 +300,26 @@
       }
       throw new Error("GitHub Contents PUT failed: " + detail);
     }
-    // Refresh from Pages (or local file) after commit.
+    // After PUT: apply the payload we just wrote (no Pages CDN). Optionally
+    // confirm via raw.githubusercontent.com (not github.io).
+    applyWatchlistData(payload, { setBase: true });
     try {
-      const url = isLocalPreview()
-        ? DATA_URL + "?t=" + Date.now()
-        : PAGES_WATCHLIST_URL + "?t=" + Date.now();
-      const fres = await fetch(url, { cache: "no-store" });
+      const rawUrl = RAW_WATCHLIST_URL + "?t=" + Date.now();
+      let fres = await fetch(rawUrl, { cache: "no-store" });
+      if (!fres.ok) {
+        await new Promise((r) => setTimeout(r, 600));
+        fres = await fetch(RAW_WATCHLIST_URL + "?t=" + Date.now(), {
+          cache: "no-store",
+        });
+      }
       if (fres.ok) {
         const data = await fres.json();
         applyWatchlistData(data, { setBase: true });
       }
     } catch (_) {
-      /* keep local state */
+      /* keep applied payload */
     }
-    return { ok: true };
+    return { ok: true, watchlist: payload };
   }
 
   async function tryCommitAdd(ticker) {
@@ -836,7 +846,13 @@
     saveOverlay();
     render();
     setStatus("Removed " + sym + " (local) — committing…", "ok");
-    await tryCommitRemove(sym);
+    setCommitBusy(true);
+    try {
+      await tryCommitRemove(sym);
+    } finally {
+      setCommitBusy(false);
+      renderMeta();
+    }
   }
 
   function escapeHtml(s) {
@@ -2645,7 +2661,25 @@
     setStatus("Downloaded updated watchlist.json", "ok");
   }
 
+
+  function setCommitBusy(busy) {
+    commitInFlight = !!busy;
+    const submit = $("btnAddSubmit");
+    const addBtn = $("btnAdd");
+    if (submit) {
+      submit.disabled = !!busy || (state.tickers.length >= CAP && !busy);
+      submit.textContent = busy ? "Committing…" : "Add to watchlist";
+    }
+    if (addBtn) {
+      addBtn.disabled = !!busy || state.tickers.length >= CAP;
+    }
+  }
+
   async function addTicker() {
+    if (commitInFlight) {
+      setStatus("Commit already in flight — wait for it to finish.", "warn");
+      return;
+    }
     if (state.tickers.length >= CAP) {
       setStatus(
         "Hard stop: watchlist is at cap (" + CAP + "). Cannot add a 21st ticker.",
@@ -2701,7 +2735,13 @@
         ") — committing to public file…",
       "ok"
     );
-    await tryCommitAdd(ticker);
+    setCommitBusy(true);
+    try {
+      await tryCommitAdd(ticker);
+    } finally {
+      setCommitBusy(false);
+      renderMeta();
+    }
   }
 
   function wireUi() {

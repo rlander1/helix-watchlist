@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-09-17T19:16:37-04:00",
+  "updated_at": "2026-09-17T19:22:29-04:00",
   "status": "committed",
   "cap": 20,
   "horizon": "up to 2 weeks",
@@ -88,13 +88,41 @@
       "source": "https://finance.yahoo.com/quote/AAPL",
       "quote_status": "ok",
       "previous_close": 326.57
+    },
+    {
+      "symbol": "BBC",
+      "name": "BBC",
+      "last": 49.2464,
+      "change": -0.6636,
+      "change_pct": -1.3296,
+      "currency": "USD",
+      "action": "Watch",
+      "action_why": "",
+      "size_usd": null,
+      "source": "https://finance.yahoo.com/quote/BBC",
+      "quote_status": "ok",
+      "previous_close": 49.91
+    },
+    {
+      "symbol": "MSFT",
+      "name": "MSFT",
+      "last": 497.75,
+      "change": 5.31,
+      "change_pct": 1.0783,
+      "currency": "USD",
+      "action": "Watch",
+      "action_why": "",
+      "size_usd": null,
+      "source": "https://finance.yahoo.com/quote/MSFT",
+      "quote_status": "ok",
+      "previous_close": 492.44
     }
   ],
+  "committed_count": 8,
   "notes": "",
-  "committed_count": 6,
-  "quotes_refreshed_at": "2026-09-17T19:16:37-04:00",
+  "quotes_refreshed_at": "2026-09-17T19:22:29-04:00",
   "quote_refresh": {
-    "at": "2026-09-17T19:16:37-04:00",
+    "at": "2026-09-17T19:22:29-04:00",
     "source": "yahoo_chart_public",
     "ok": [
       "SKHY",
@@ -102,7 +130,9 @@
       "SPCX",
       "LASR",
       "NVDA",
-      "AAPL"
+      "AAPL",
+      "BBC",
+      "MSFT"
     ],
     "failed": [],
     "failed_detail": []

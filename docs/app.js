@@ -60,6 +60,17 @@
   }
 
   function saveOverlay() {
+    // Do not persist an empty ticker list over a known committed file list.
+    const fileTickers =
+      baseFromFile && Array.isArray(baseFromFile.tickers)
+        ? baseFromFile.tickers
+        : [];
+    if (
+      (!state.tickers || state.tickers.length === 0) &&
+      fileTickers.length > 0
+    ) {
+      return;
+    }
     const payload = {
       updated_at: state.updated_at,
       tickers: state.tickers,
@@ -153,7 +164,16 @@
   }
 
   function mergeOverlay(fileData, overlay) {
-    if (!overlay || !Array.isArray(overlay.tickers)) return fileData;
+    if (!overlay) return fileData;
+    const fileTickers = Array.isArray(fileData.tickers) ? fileData.tickers : [];
+    // Never blank the table: empty/missing overlay.tickers fall back to the committed file list.
+    if (!Array.isArray(overlay.tickers) || overlay.tickers.length === 0) {
+      return {
+        ...fileData,
+        updated_at: overlay.updated_at || fileData.updated_at,
+        tickers: fileTickers,
+      };
+    }
     return {
       ...fileData,
       updated_at: overlay.updated_at || fileData.updated_at,
@@ -162,6 +182,21 @@
         action: normalizeAction(t.action),
       })),
     };
+  }
+
+  /** Repair corrupt empty overlay so it cannot hide the committed watchlist. */
+  function repairEmptyOverlay(fileData, overlay) {
+    const fileTickers = Array.isArray(fileData && fileData.tickers)
+      ? fileData.tickers
+      : [];
+    if (!overlay) return;
+    if (Array.isArray(overlay.tickers) && overlay.tickers.length > 0) return;
+    if (fileTickers.length === 0) return;
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch (_) {
+      /* ignore */
+    }
   }
 
   function remainingSlots() {
@@ -2276,7 +2311,12 @@
     $("btnRefreshStatuses").addEventListener("click", refreshStatuses);
     $("btnDownload").addEventListener("click", downloadJson);
     $("btnResetOverlay").addEventListener("click", () => {
-      if (!confirm("Clear local edits and reload from watchlist.json?")) return;
+      if (
+        !confirm(
+          "Clear local watchlist edits and reload the committed list from watchlist.json? (Paper portfolio / orders are separate and unchanged.)"
+        )
+      )
+        return;
       localStorage.removeItem(STORAGE_KEY);
       bootstrap();
     });
@@ -2366,7 +2406,8 @@
       const data = await res.json();
       baseFromFile = data;
       const overlay = loadOverlay();
-      const merged = mergeOverlay(data, overlay);
+      repairEmptyOverlay(data, overlay);
+      const merged = mergeOverlay(data, loadOverlay());
       state = {
         updated_at: merged.updated_at || "",
         status: merged.status || data.status || "",

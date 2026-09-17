@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-09-17T19:25:08-04:00",
+  "updated_at": "2026-09-17T19:33:33-04:00",
   "status": "committed",
   "cap": 20,
   "horizon": "up to 2 weeks",
@@ -120,9 +120,9 @@
   ],
   "committed_count": 8,
   "notes": "",
-  "quotes_refreshed_at": "2026-09-17T19:25:08-04:00",
+  "quotes_refreshed_at": "2026-09-17T19:33:33-04:00",
   "quote_refresh": {
-    "at": "2026-09-17T19:25:08-04:00",
+    "at": "2026-09-17T19:33:33-04:00",
     "source": "yahoo_chart_public",
     "ok": [
       "SKHY",

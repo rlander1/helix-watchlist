@@ -6,9 +6,9 @@ on:
   schedule:
     # Weekdays America/New_York wall clock during EDT (UTC-4):
     #   9:30 AM ET market open  → 13:30 UTC
-    #   4:00 PM ET near close   → 20:00 UTC
+    #   Settled close           → 21:35 UTC (5:35 PM ET during EDT; 4:35 PM ET after Nov 1 / EST)
     - cron: "30 13 * * 1-5"
-    - cron: "0 20 * * 1-5"
+    - cron: "35 21 * * 1-5"
   workflow_dispatch:
 
 permissions:
